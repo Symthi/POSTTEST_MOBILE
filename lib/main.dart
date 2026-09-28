@@ -341,7 +341,7 @@ class CartPage extends StatelessWidget {
             width: 50,
             child: TextField(
               textAlign: TextAlign.center,
-              // keyboardType mengatur input agar pengguna hanya dapat memasukkan data angka.
+              // keyboardType mengatur input agar user hanya dapat memasukkan data angka.
               keyboardType: TextInputType.number,
               decoration: InputDecoration(
                 hintText: '1',
