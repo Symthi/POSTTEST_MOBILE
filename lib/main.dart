@@ -1,50 +1,140 @@
 import 'package:flutter/material.dart';
+// Import package flutter_bloc untuk menggunakan Cubit dan BlocBuilder
+import 'package:flutter_bloc/flutter_bloc.dart';
 
 void main() {
   runApp(const MusikStoreApp());
 }
 
 // --- MODEL DATA ---
-// Class Product digunakan sebagai cetak biru (blueprint) data produk.
 class Product {
+  final String id; // Menambahkan ID untuk mempermudah pencarian unik
   final String name;
   final int price;
-  int stock; // stock tidak final karena nilainya akan berubah (berkurang) saat dimasukkan keranjang.
+  int stock;
 
-  Product({required this.name, required this.price, required this.stock});
+  Product({required this.id, required this.name, required this.price, required this.stock});
 }
 
-// Class CartItem digunakan untuk menyimpan produk apa saja yang ada di keranjang beserta jumlahnya.
 class CartItem {
   final Product product;
-  int quantity; // quantity bisa berubah sesuai input pengguna.
+  int quantity;
 
   CartItem({required this.product, this.quantity = 1});
 }
-// ------------------
 
-// StatelessWidget digunakan di sini karena konfigurasi awal aplikasi (tema, judul) bersifat statis/tetap.
+// ============================================================================
+// --- STATE MANAGEMENT (CUBIT / BLoC PATTERN) ---
+// ============================================================================
+
+// 1. STATE CLASS (Pengganti properti-properti di dalam ChangeNotifier)
+// Menyimpan seluruh data global yang dibutuhkan aplikasi.
+class CartState {
+  final List<Product> products;
+  final List<CartItem> cartItems;
+
+  CartState({required this.products, required this.cartItems});
+
+  // copyWith: Konsep penting di Cubit. Karena state bersifat immutable (tidak bisa diubah langsung),
+  // kita membuat duplikat state lama dengan data baru.
+  CartState copyWith({List<Product>? products, List<CartItem>? cartItems}) {
+    return CartState(
+      products: products ?? this.products,
+      cartItems: cartItems ?? this.cartItems,
+    );
+  }
+
+  // Getter untuk total harga, sama seperti di modul Provider.
+  int get grandTotal {
+    return cartItems.fold(0, (total, item) => total + (item.product.price * item.quantity));
+  }
+}
+
+// 2. CUBIT CLASS (Pengganti ChangeNotifier / CartProvider)
+// Menangani semua fungsi logika bisnis (tambah keranjang, ubah jumlah).
+class CartCubit extends Cubit<CartState> {
+  // Constructor: Menetapkan state awal saat aplikasi pertama kali dijalankan.
+  CartCubit() : super(CartState(
+    products: [
+      Product(id: 'p1', name: 'Gitar Elektrik - Garasi Gitar 3', price: 4500000, stock: 5),
+      Product(id: 'p2', name: 'Keyboard Synthesizer - Borneo Cantata', price: 8200000, stock: 2),
+      Product(id: 'p3', name: 'Set Drum Akustik', price: 12000000, stock: 0),
+    ],
+    cartItems: [],
+  ));
+
+  void addToCart(Product product) {
+    if (product.stock <= 0) return;
+
+    // Menduplikasi list agar Cubit dapat mendeteksi adanya perubahan referensi data.
+    final newProducts = List<Product>.from(state.products);
+    final newCartItems = List<CartItem>.from(state.cartItems);
+
+    // Kurangi stok produk
+    final productIndex = newProducts.indexWhere((p) => p.id == product.id);
+    if (productIndex >= 0) newProducts[productIndex].stock--;
+
+    // Tambahkan atau perbarui keranjang
+    final cartIndex = newCartItems.indexWhere((item) => item.product.id == product.id);
+    if (cartIndex >= 0) {
+      newCartItems[cartIndex].quantity++;
+    } else {
+      // Perhatikan kita membuat referensi produk baru agar sinkron dengan state baru
+      newCartItems.add(CartItem(product: newProducts[productIndex], quantity: 1));
+    }
+
+    // emit() adalah konsep Cubit yang berfungsi SAMA seperti notifyListeners() pada Provider.
+    // Memberitahu UI (BlocBuilder) untuk merender ulang dengan State yang baru.
+    emit(state.copyWith(products: newProducts, cartItems: newCartItems));
+  }
+
+  void changeQuantity(Product product, int newQuantity) {
+    final newProducts = List<Product>.from(state.products);
+    final newCartItems = List<CartItem>.from(state.cartItems);
+
+    final cartIndex = newCartItems.indexWhere((item) => item.product.id == product.id);
+    if (cartIndex == -1) return;
+
+    final currentItem = newCartItems[cartIndex];
+    int difference = newQuantity - currentItem.quantity;
+
+    // Sesuaikan stok di list produk
+    final productIndex = newProducts.indexWhere((p) => p.id == product.id);
+    if (productIndex >= 0) newProducts[productIndex].stock -= difference;
+
+    // Perbarui kuantitas
+    currentItem.quantity = newQuantity;
+
+    // Beritahu UI ada perubahan data
+    emit(state.copyWith(products: newProducts, cartItems: newCartItems));
+  }
+}
+// ============================================================================
+
 class MusikStoreApp extends StatelessWidget {
   const MusikStoreApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // MaterialApp adalah widget wrapper utama dari aplikasi Flutter.
-    return MaterialApp(
-      title: 'Musik Store',
-      debugShowCheckedModeBanner: false, // Menyembunyikan pita debug di pojok kanan atas.
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueGrey),
-        fontFamily: 'Inter',
+    // BlocProvider fungsinya persis sama dengan ChangeNotifierProvider.
+    // Digunakan untuk "menyuntikkan" CartCubit agar bisa diakses oleh seluruh widget di bawahnya.
+    return BlocProvider(
+      create: (context) => CartCubit(),
+      child: MaterialApp(
+        title: 'Musik Store',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueGrey),
+          fontFamily: 'Inter',
+        ),
+        home: const MainScreen(),
       ),
-      // home menentukan halaman pertama yang dimuat.
-      home: const MainScreen(),
     );
   }
 }
 
-// Menggunakan StatefulWidget karena MainScreen harus mengelola state navigasi (Tab mana yang aktif),
-// serta menyimpan data keranjang belanja dan sisa stok produk.
+// MainScreen tetap menjadi StatefulWidget karena state index navigasi (bottom navbar)
+// bersifat LOKAL dan hanya digunakan di halaman ini. Ini sesuai dengan anjuran modul.
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
 
@@ -53,81 +143,29 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen> {
-  // State: Variabel untuk menyimpan index tab navigasi bawah yang sedang aktif.
   int _selectedIndex = 0;
 
-  // State: Daftar produk statis yang tersedia di aplikasi beserta stok awalnya.
-  final List<Product> _products = [
-    Product(name: 'Gitar Elektrik - Garasi Gitar 3', price: 4500000, stock: 5),
-    Product(name: 'Keyboard Synthesizer - Borneo Cantata', price: 8200000, stock: 2),
-    Product(name: 'Set Drum Akustik', price: 12000000, stock: 0), // Sengaja diset 0 untuk melihat efek tombol mati (disabled).
-  ];
-
-  // State: List kosong yang nantinya akan menampung item yang dimasukkan ke keranjang.
-  final List<CartItem> _cart = [];
-
-  // Fungsi untuk memindahkan halaman melalui Bottom Navigation.
   void _onItemTapped(int index) {
-    // setState WAJIB dipanggil setiap kali kita ingin mengubah tampilan berdasarkan data yang baru.
     setState(() {
       _selectedIndex = index;
     });
   }
 
-  // Fungsi untuk menambah produk ke keranjang.
-  void _addToCart(Product product) {
-    setState(() {
-      // Mengecek apakah produk yang ditekan sudah ada di keranjang.
-      final existingIndex = _cart.indexWhere((item) => item.product.name == product.name);
-
-      if (existingIndex >= 0) {
-        // Jika sudah ada, tambahkan saja kuantitasnya (jumlahnya).
-        _cart[existingIndex].quantity += 1;
-      } else {
-        // Jika belum ada, buat item baru di keranjang.
-        _cart.add(CartItem(product: product));
-      }
-      // Kurangi stok produk asli sebesar 1 setiap kali tombol ditekan.
-      product.stock -= 1;
-    });
-  }
-
-  // Fungsi untuk mengubah jumlah barang langsung dari halaman keranjang (Text input).
-  void _changeQuantity(CartItem item, int newQuantity) {
-    setState(() {
-      // Hitung selisih angka baru dengan angka lama.
-      int difference = newQuantity - item.quantity;
-      // Kurangi stok produk berdasarkan selisih (bisa bertambah atau berkurang).
-      item.product.stock -= difference;
-      // Perbarui nilai kuantitas di keranjang.
-      item.quantity = newQuantity;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
-    // Daftar halaman yang akan ditampilkan sesuai nilai _selectedIndex.
+    // Tidak perlu lagi mengoper data (prop drilling) melalui constructor ke halaman anak!
     final List<Widget> pages = [
-      HomeContent(
-        products: _products, // Mengirim data produk ke halaman beranda
-        onAddToCart: _addToCart, // Mengirim fungsi tambah keranjang ke halaman beranda
-      ),
-      CartPage(
-        cartItems: _cart, // Mengirim data isi keranjang
-        onChangeQuantity: _changeQuantity, // Mengirim fungsi ubah jumlah ke halaman keranjang
-      ),
-      const Center(child: Text('Halaman Profil')), // Center digunakan untuk memosisikan widget di tengah.
+      const HomeContent(),
+      const CartPage(),
+      const Center(child: Text('Halaman Profil')),
     ];
 
-    // Scaffold menyediakan struktur dasar (kanvas) untuk halaman aplikasi.
     return Scaffold(
       backgroundColor: Colors.white,
-      // body menampilkan widget dari list pages.
       body: pages[_selectedIndex],
-      // bottomNavigationBar digunakan untuk membuat menu navigasi di bagian bawah.
       bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex, // Indikator menu mana yang menyala/aktif.
-        onTap: _onItemTapped, // Menjalankan fungsi perpindahan tab.
+        currentIndex: _selectedIndex,
+        onTap: _onItemTapped,
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Beranda'),
           BottomNavigationBarItem(icon: Icon(Icons.shopping_cart), label: 'Keranjang'),
@@ -138,51 +176,30 @@ class _MainScreenState extends State<MainScreen> {
   }
 }
 
-// --- HALAMAN BERANDA ---
-// Menjadi StatefulWidget karena kita perlu menyimpan teks pencarian pengguna secara realtime.
+// HomeContent tetap StatefulWidget LOKAL karena ada fitur "searchQuery"
 class HomeContent extends StatefulWidget {
-  final List<Product> products;
-  final Function(Product) onAddToCart;
-
-  const HomeContent({
-    super.key,
-    required this.products,
-    required this.onAddToCart,
-  });
+  const HomeContent({super.key});
 
   @override
   State<HomeContent> createState() => _HomeContentState();
 }
 
 class _HomeContentState extends State<HomeContent> {
-  // State: Variabel untuk menyimpan apa yang diketik pengguna di kolom pencarian.
   String searchQuery = '';
 
   @override
   Widget build(BuildContext context) {
-    // Memfilter data: Hanya menampilkan produk yang namanya mengandung teks pencarian.
-    final visibleProducts = widget.products.where((product) {
-      return product.name.toLowerCase().contains(searchQuery.toLowerCase());
-    }).toList();
-
-    // SafeArea mencegah UI tertutup oleh poni layar (notch) atau status bar HP.
     return SafeArea(
-      // SingleChildScrollView agar layar bisa di-scroll ke bawah jika isi produk banyak.
       child: SingleChildScrollView(
-        // Padding memberikan jarak/ruang kosong di sekeliling konten.
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-          // Column menyusun widget dari atas ke bawah.
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // TextField adalah kolom input untuk user mengetik teks.
               TextField(
-                // onChanged dipanggil setiap kali ada huruf baru yang diketik.
-                // Disinilah kita menggunakan setState() untuk memperbarui searchQuery.
                 onChanged: (value) => setState(() => searchQuery = value),
                 decoration: InputDecoration(
-                  hintText: 'Cari Instrumen...', // Teks bayangan saat kosong.
+                  hintText: 'Cari Instrumen...',
                   hintStyle: TextStyle(color: Colors.grey.shade400),
                   suffixIcon: Padding(
                     padding: const EdgeInsets.only(right: 16),
@@ -191,17 +208,29 @@ class _HomeContentState extends State<HomeContent> {
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(8.0)),
                 ),
               ),
-              const SizedBox(height: 24), // SizedBox sebagai spasi vertikal.
+              const SizedBox(height: 24),
 
-              // Looping (mengulang) pembuatan kartu produk sesuai dengan daftar produk yang sudah difilter.
-              ...visibleProducts.map((product) => Padding(
-                padding: const EdgeInsets.only(bottom: 16.0),
-                child: _buildProductCard(product),
-              )),
+              // BlocBuilder fungsinya SAMA seperti Consumer pada Provider.
+              // Ia mendengarkan emit() dari Cubit dan akan membangun ulang (rebuild) bagian UI ini.
+              BlocBuilder<CartCubit, CartState>(
+                builder: (context, state) {
+                  // Mengambil data products dari state global yang ada di Cubit
+                  final visibleProducts = state.products.where((product) {
+                    return product.name.toLowerCase().contains(searchQuery.toLowerCase());
+                  }).toList();
 
-              // Menampilkan pesan teks jika tidak ada produk yang sesuai dengan pencarian.
-              if (visibleProducts.isEmpty)
-                const Center(child: Text("Tidak ada produk tersedia.")),
+                  if (visibleProducts.isEmpty) {
+                    return const Center(child: Text("Tidak ada produk tersedia."));
+                  }
+
+                  return Column(
+                    children: visibleProducts.map((product) => Padding(
+                      padding: const EdgeInsets.only(bottom: 16.0),
+                      child: _buildProductCard(context, product),
+                    )).toList(),
+                  );
+                },
+              ),
             ],
           ),
         ),
@@ -209,20 +238,16 @@ class _HomeContentState extends State<HomeContent> {
     );
   }
 
-  // Fungsi pembuat desain masing-masing kartu produk.
-  Widget _buildProductCard(Product product) {
-    // Container sering digunakan sebagai bungkus/kotak luar dengan dekorasi.
+  Widget _buildProductCard(BuildContext context, Product product) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
-        border: Border.all(color: Colors.grey.shade300), // Garis pinggir abu-abu.
-        borderRadius: BorderRadius.circular(8), // Membuat sudut tumpul.
+        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(8),
       ),
-      // Row menyusun widget secara menyamping (Kiri ke Kanan).
       child: Row(
         children: [
-          // Container abu-abu ini adalah placeholder (tempat sementara) untuk gambar produk.
           Container(
             width: 80, height: 80,
             decoration: BoxDecoration(
@@ -231,41 +256,32 @@ class _HomeContentState extends State<HomeContent> {
             ),
           ),
           const SizedBox(width: 16),
-          // Expanded memaksa teks dan tombol untuk mengisi seluruh sisa ruang di sebelah kanan gambar.
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  product.name,
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
+                Text(product.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
-                Text(
-                  'Rp${product.price}',
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                ),
+                Text('Rp${product.price}', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 8),
                 Text('Sisa stok: ${product.stock}', style: const TextStyle(fontSize: 12, color: Colors.grey)),
                 const SizedBox(height: 12),
 
-                // InkWell memberikan efek sentuhan (ripple) ketika diklik.
-                // Jika stok > 0, onTap diisi fungsi onAddToCart. Jika stok <= 0, onTap diisi null (tombol mati).
                 InkWell(
-                  onTap: product.stock > 0 ? () => widget.onAddToCart(product) : null,
+                  onTap: product.stock > 0 ? () {
+                    // context.read<CartCubit>() fungsinya persis seperti context.read<CartProvider>().
+                    // Memanggil fungsi tanpa perlu mendengarkan perubahannya (tanpa me-rebuild dirinya sendiri).
+                    context.read<CartCubit>().addToCart(product);
+                  } : null,
                   child: Container(
-                    width: double.infinity, // Memenuhi lebar penuh.
+                    width: double.infinity,
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     decoration: BoxDecoration(
-                      // Warna tombol berubah jadi abu-abu jika stok habis.
                       color: product.stock > 0 ? Colors.black : Colors.grey,
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: const Center(
-                      child: Text(
-                        'Masukkan Keranjang',
-                        style: TextStyle(color: Colors.white, fontSize: 12),
-                      ),
+                      child: Text('Masukkan Keranjang', style: TextStyle(color: Colors.white, fontSize: 12)),
                     ),
                   ),
                 ),
@@ -278,173 +294,130 @@ class _HomeContentState extends State<HomeContent> {
   }
 }
 
-// --- HALAMAN KERANJANG ---
 class CartPage extends StatelessWidget {
-  final List<CartItem> cartItems;
-  final Function(CartItem, int) onChangeQuantity;
-
-  const CartPage({
-    super.key,
-    required this.cartItems,
-    required this.onChangeQuantity,
-  });
+  const CartPage({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // Menghitung total harga belanjaan (State turunan).
-    int currentGrandTotal = 0;
-    for (var item in cartItems) {
-      currentGrandTotal += (item.product.price * item.quantity);
-    }
-
     return SafeArea(
-      // Stack menumpuk widget seperti lapisan kue (Layering).
-      // Widget yang ditulis lebih dulu akan berada di belakang.
-      child: Stack(
-        children: [
-          // Positioned digunakan di dalam Stack untuk menentukan koordinat pasti widget tersebut.
-          // Ini adalah layer belakang (Daftar barang).
-          Positioned(
-            top: 0, left: 0, right: 0, bottom: 80, // bottom 80 agar tidak tertutup kotak total checkout.
-            child: SingleChildScrollView(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  children: cartItems.map((item) => Padding(
-                    padding: const EdgeInsets.only(bottom: 16.0),
-                    child: CartProductCard(
-                      item: item,
-                      onQuantityChanged: (newQuantity) {
-                        onChangeQuantity(item, newQuantity);
-                      },
+      // Menggunakan BlocBuilder untuk merender daftar keranjang dan total harga.
+      child: BlocBuilder<CartCubit, CartState>(
+        builder: (context, state) {
+          return Stack(
+            children: [
+              Positioned(
+                top: 0, left: 0, right: 0, bottom: 80,
+                child: SingleChildScrollView(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      children: state.cartItems.map((item) => Padding(
+                        padding: const EdgeInsets.only(bottom: 16.0),
+                        child: CartProductCard(item: item),
+                      )).toList(),
                     ),
-                  )).toList(),
+                  ),
                 ),
               ),
-            ),
-          ),
-
-          // Layer Depan/Bawah (Kotak Hitung Total dan Checkout) yang menutupi list.
-          Positioned(
-            bottom: 0, left: 0, right: 0,
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                // BoxShadow memberikan efek bayangan sehingga kontainer ini terlihat melayang di atas konten.
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.grey.shade300,
-                    blurRadius: 10, offset: const Offset(0, -3),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween, // Memisah Total ke kiri dan Tombol ke kanan.
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Total', style: TextStyle(fontSize: 14)),
-                      Text(
-                        'Rp$currentGrandTotal',
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                      ),
+              Positioned(
+                bottom: 0, left: 0, right: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    boxShadow: [
+                      BoxShadow(color: Colors.grey.shade300, blurRadius: 10, offset: const Offset(0, -3)),
                     ],
                   ),
-                  // ElevatedButton adalah tombol bawaan Flutter dengan gaya timbul.
-                  ElevatedButton(
-                    // Tombol ini hanya akan aktif jika total belanja > 0.
-                    // Jika total 0 (keranjang kosong), nilainya null sehingga tombol otomatis disabled.
-                    onPressed: currentGrandTotal > 0 ? () {
-                      // Menampilkan pop-up notifikasi (SnackBar) saat checkout ditekan.
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Berhasil Checkout!')),
-                      );
-                    } : null,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.black,
-                      disabledBackgroundColor: Colors.grey, // Warna saat nilai onPressed adalah null.
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    ),
-                    child: const Text('Checkout', style: TextStyle(color: Colors.white)),
-                  )
-                ],
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Total', style: TextStyle(fontSize: 14)),
+                          Text(
+                            // Memanggil getter grandTotal dari CartState
+                            'Rp${state.grandTotal}',
+                            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                      ElevatedButton(
+                        onPressed: state.grandTotal > 0 ? () {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Berhasil Checkout!')),
+                          );
+                        } : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.black,
+                          disabledBackgroundColor: Colors.grey,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        child: const Text('Checkout', style: TextStyle(color: Colors.white)),
+                      )
+                    ],
+                  ),
+                ),
               ),
-            ),
-          ),
-        ],
+            ],
+          );
+        },
       ),
     );
   }
 }
 
-// --- KARTU PRODUK DI DALAM KERANJANG ---
-// Menjadi StatefulWidget karena TextField butuh TextEditingController untuk mengontrol angka di dalamnya.
+// CartProductCard masih butuh StatefulWidget untuk mengelola TextField TextEditingController secara lokal.
 class CartProductCard extends StatefulWidget {
   final CartItem item;
-  final Function(int) onQuantityChanged;
 
-  const CartProductCard({
-    super.key,
-    required this.item,
-    required this.onQuantityChanged,
-  });
+  const CartProductCard({super.key, required this.item});
 
   @override
   State<CartProductCard> createState() => _CartProductCardState();
 }
 
 class _CartProductCardState extends State<CartProductCard> {
-  // TextEditingController bertugas mengatur, membaca, dan mengubah teks di dalam TextField.
   late TextEditingController quantityController;
 
-  // initState dipanggil SATU KALI saat widget ini pertama kali diciptakan di layar.
   @override
   void initState() {
     super.initState();
-    // Mengisi nilai awal TextField dengan jumlah/kuantitas dari keranjang.
     quantityController = TextEditingController(text: '${widget.item.quantity}');
   }
 
-  // didUpdateWidget dipanggil setiap kali widget induk (CartPage) mengirim data 'item' yang baru.
   @override
   void didUpdateWidget(covariant CartProductCard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Jika jumlah di memori berbeda dengan yang tertulis di TextField, perbarui isi TextField.
     if (oldWidget.item.quantity != widget.item.quantity &&
         quantityController.text != '${widget.item.quantity}') {
       quantityController.text = '${widget.item.quantity}';
     }
   }
 
-  // dispose dipanggil saat widget ini dihancurkan (misal keluar dari halaman) untuk mencegah kebocoran memori.
   @override
   void dispose() {
     quantityController.dispose();
     super.dispose();
   }
 
-  // Fungsi validasi saat user mengetik kuantitas secara manual (misal diketik angka 10).
   void updateQuantity(String value) {
-    // int.tryParse mencoba mengubah string menjadi integer (angka). Jika gagal (misal user mengetik huruf), hasilnya null.
     final parsed = int.tryParse(value);
-
-    // Jika user menginput bukan angka atau angka kurang dari 1, kita batalkan perubahannya.
     if (parsed == null || parsed < 1) {
-      quantityController.text = '${widget.item.quantity}'; // Kembalikan ke angka semula.
+      quantityController.text = '${widget.item.quantity}';
       return;
     }
 
-    // Menghitung batas maksimum yang bisa dibeli user (stok yang sudah di keranjang + stok asli toko).
-    int maxQuantity = widget.item.quantity + widget.item.product.stock;
+    // Mendapatkan sisa stok saat ini dari Cubit state untuk divalidasi
+    final globalProducts = context.read<CartCubit>().state.products;
+    final originalProduct = globalProducts.firstWhere((p) => p.id == widget.item.product.id);
 
-    // clamp memastikan angka akhir tidak kurang dari 1 dan tidak melebihi stok yang ada.
+    int maxQuantity = widget.item.quantity + originalProduct.stock;
     int finalQuantity = parsed.clamp(1, maxQuantity);
 
-    // Memberitahu fungsi di MainScreen bahwa kuantitas berubah.
-    widget.onQuantityChanged(finalQuantity);
-    // Mengubah tampilan teks pada TextField dengan angka yang sudah divalidasi.
+    // Memanggil fungsi dari Cubit menggunakan context.read()
+    context.read<CartCubit>().changeQuantity(widget.item.product, finalQuantity);
     quantityController.text = '$finalQuantity';
   }
 
@@ -461,11 +434,8 @@ class _CartProductCardState extends State<CartProductCard> {
         children: [
           Container(
             width: 60, height: 60,
-            decoration: BoxDecoration(
-              color: Colors.grey.shade200,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(Icons.music_note, color: Colors.grey), // Icon bawaan Flutter.
+            decoration: BoxDecoration(color: Colors.grey.shade200, borderRadius: BorderRadius.circular(8)),
+            child: const Icon(Icons.music_note, color: Colors.grey),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -478,14 +448,13 @@ class _CartProductCardState extends State<CartProductCard> {
               ],
             ),
           ),
-          // Membatasi ukuran lebar kotak TextField agar tidak terlalu panjang.
           SizedBox(
             width: 50,
             child: TextField(
-              controller: quantityController, // Mengikat controller yang dibuat di atas.
-              textAlign: TextAlign.center, // Posisi teks di tengah.
-              keyboardType: TextInputType.number, // Menampilkan keyboard khusus angka di HP.
-              onSubmitted: updateQuantity, // Dijalankan saat user memencet 'Enter' / 'Done' di keyboard.
+              controller: quantityController,
+              textAlign: TextAlign.center,
+              keyboardType: TextInputType.number,
+              onSubmitted: updateQuantity,
               decoration: InputDecoration(
                 contentPadding: const EdgeInsets.symmetric(vertical: 8),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(4)),
